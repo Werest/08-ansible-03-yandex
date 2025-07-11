@@ -1,5 +1,9 @@
 # Домашнее задание к занятию 3 «Использование Ansible»
 
+
+![03-yandex-ansible-playbook-ready.png](https://github.com/Werest/08-ansible-03-yandex/blob/442a448cfa3d846bb28c602000e8bf9fc6ccd7ff/03-yandex-ansible-playbook-ready.png)
+
+
 ## Подготовка к выполнению
 
 1. Подготовьте в Yandex Cloud три хоста: для `clickhouse`, для `vector` и для `lighthouse`.
