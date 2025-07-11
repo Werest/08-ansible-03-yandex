@@ -1,0 +1,134 @@
+---
+- name: Install Clickhouse
+  hosts: clickhouse
+  handlers:
+    - name: Start clickhouse service
+      become: true
+      ansible.builtin.service:
+        name: clickhouse-server
+        state: restarted
+
+  tasks:
+    - name: Download ClickHouse packages # Добавлено имя для блока
+      block:
+        - name: Get clickhouse distrib
+          ansible.builtin.get_url:
+            url: "https://packages.clickhouse.com/rpm/stable/{{ item }}-{{ clickhouse_version }}.noarch.rpm"
+            dest: "./{{ item }}-{{ clickhouse_version }}.rpm"
+            mode: '0644' # Явно указаны права доступа
+          with_items: "{{ clickhouse_packages }}"
+      rescue:
+        - name: Get clickhouse distrib
+          ansible.builtin.get_url:
+            url: "https://packages.clickhouse.com/rpm/stable/clickhouse-common-static-{{ clickhouse_version }}.x86_64.rpm"
+            dest: "./clickhouse-common-static-{{ clickhouse_version }}.rpm"
+            mode: '0644' # Явно указаны права доступа
+    - name: Install clickhouse packages
+      become: true
+      ansible.builtin.dnf:  # Заменено yum на dnf с FQCN
+        name:
+          - clickhouse-client-{{ clickhouse_version }}.rpm
+          - clickhouse-server-{{ clickhouse_version }}.rpm
+          - clickhouse-common-static-{{ clickhouse_version }}.rpm
+        disable_gpg_check: true  # TODO: разобраться с GPG
+      notify: Start clickhouse service
+
+    - name: Enable clickhouse service
+      become: true
+      ansible.builtin.service:
+        name: clickhouse-server
+        enabled: true
+
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers # Изменено на ansible.builtin.meta
+
+    # Ожидаем доступности сервера
+    # Гарантирует, что задача создания БД выполнится только после готовности ClickHouse.
+    - name: Wait for ClickHouse to start
+      ansible.builtin.wait_for:
+        host: localhost
+        port: 9000
+        timeout: 15
+        delay: 10
+        sleep: 5
+
+    - name: Create database
+      ansible.builtin.command: "clickhouse-client -q 'create database if not exists logs;'"
+      register: create_db
+      failed_when: create_db.rc != 0 and create_db.rc != 82 # Добавлен пробел
+      changed_when: create_db.rc == 0
+
+# При создании tasks рекомендую использовать модули: get_url, template, unarchive, file.
+# Можно пойти путём лучше через пакет RPM
+- name: Install and configure Vector
+  hosts: clickhouse
+  remote_user: "{{ansible_ssh_user}}"
+  become: true
+  handlers:
+    - name: Restart vector service
+      become: true
+      ansible.builtin.systemd:
+        name: vector
+        state: restarted
+  tasks:
+    - name: Download Vector distribution
+      ansible.builtin.get_url:
+        url: "https://packages.timber.io/vector/{{ vector_version }}/vector-{{ vector_version }}-1.x86_64.rpm"
+        dest: "./vector-{{ vector_version }}.rpm"
+        mode: '0644'
+    - name: Install Vector
+      become: true
+      ansible.builtin.dnf:
+        name: "./vector-{{ vector_version }}.rpm"
+        state: present
+        disable_gpg_check: true
+    - name: Deploy Vector configuration
+      ansible.builtin.template:
+        src: templates/vector.yml.j2
+        dest: "/etc/vector/vector.toml"
+        mode: '0644'
+      notify: Restart vector service
+
+- name: Install and configure LightHouse
+  hosts: clickhouse
+  remote_user: "{{ansible_ssh_user}}"
+  become: true
+  handlers:
+    - name: Restart nginx service
+      become: true
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
+  tasks:
+    - name: Install required packages
+      ansible.builtin.dnf:
+        name: git
+        state: present
+    - name: Clone LightHouse repository
+      ansible.builtin.git:
+        repo: 'https://github.com/VKCOM/lighthouse.git'
+        dest: '/var/www/lighthouse'
+        version: master
+    - name: Ensure permissions on LightHouse directory
+      ansible.builtin.file:
+        path: '/var/www/lighthouse'
+        state: directory
+        mode: '0755'
+    - name: Install EPEL repo
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+    - name: Install Nginx
+      ansible.builtin.dnf:
+        name: nginx
+        state: present
+    - name: Deploy Nginx configuration for LightHouse
+      ansible.builtin.template:
+        src: nginx.j2
+        dest: "/etc/nginx/conf.d/lighthouse.conf"
+        mode: '0644'
+      notify: Restart nginx service
+    - name: Ensure Nginx is running
+      ansible.builtin.systemd:
+        name: nginx
+        state: started
